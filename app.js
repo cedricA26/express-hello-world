@@ -1,17 +1,9 @@
 /**
- * Race Founders Proxy — RKC Live Timing v5
- * Mapping colonnes confirmé par analyse du raw :
- *   c2||NUM          → numéro kart affiché
- *   c4|dr|NOM        → nom équipe
- *   c4|drteam|NOM[t] → nom pilote en piste + temps roulage
- *   c6|in|VAL        → écart au leader
- *   c9|tn|VAL        → secteur 1
- *   c10|tn|VAL       → meilleur tour
- *   c12|to|VAL       → temps en piste (time on track)
- *   c12|in|VAL       → temps en piste (entrant stand)
- *   r[ID]|*|GAP|INT  → gap + intervalle
- *   r[ID]|#|NUM      → numéro kart
- *   dyn1|countdown|MS→ temps restant
+ * Race Founders Proxy — RKC Live Timing v6
+ * 
+ * Règle fondamentale : sans le paquet grid|| initial (HTML),
+ * les noms arrivent via c4|drteam et c4|dr en live.
+ * On ne stocke JAMAIS de valeurs parasites (X Tours, écarts) comme noms.
  */
 
 const http      = require("http");
@@ -36,15 +28,41 @@ function fmtMs(ms) {
   return (ms<0?"-":"") + String(h).padStart(2,"0")+":"+String(m).padStart(2,"0")+":"+String(sc).padStart(2,"0");
 }
 
+// Valide qu'une valeur est un vrai nom (pas un écart/temps/tours)
+function isValidName(val) {
+  if (!val || val.length < 2) return false;
+  // Rejeter les patterns parasites
+  if (/^\d+\s*(Tours?|Tour\s\d)/.test(val)) return false; // "3 Tours", "Tour 175"
+  if (/^\d+:\d+/.test(val)) return false;                  // "1:05.025"
+  if (/^\+?\d+\.\d+s?$/.test(val)) return false;           // "+23.141s", "25.596"
+  if (/^Tour\s+\d+$/.test(val)) return false;              // "Tour 175"
+  return true;
+}
+
+// Valide un temps de tour (60s à 180s sur circuit 1200m)
+function isValidLapTime(val) {
+  if (!val) return false;
+  val = String(val).trim();
+  var mFmt = val.match(/^(\d+):(\d+\.?\d*)$/);
+  if (mFmt) {
+    var secs = parseInt(mFmt[1])*60 + parseFloat(mFmt[2]);
+    return secs >= 60 && secs <= 180;
+  }
+  var sFmt = parseFloat(val);
+  if (!isNaN(sFmt)) return sFmt >= 60 && sFmt <= 180;
+  return false;
+}
+
 function ensureKart(id) {
   if (!karts[id]) karts[id] = {
-    id:id, pos:99, kartNum:"", teamName:"", piloteName:"", piloteTime:"",
-    gap:"", interval:"", lastLap:"", bestLap:"", laps:0, pits:0,
-    status:"", onTrack:"", s1:"",
+    id:id, pos:99, kartNum:"", teamName:"", piloteName:"",
+    gap:"", interval:"", lastLap:"", bestLap:"",
+    laps:0, pits:0, status:"", onTrack:"", s1:"",
   };
   return karts[id];
 }
 
+// Parse le paquet HTML initial grid||<tbody>...</tbody>
 function parseGridHtml(html) {
   var rowRe = /data-id="r(\d+)"\s+data-pos="(\d+)"[\s\S]*?<\/tr>/g;
   var match, count = 0;
@@ -57,35 +75,18 @@ function parseGridHtml(html) {
     var c4 = row.match(/data-id="r\d+c4"[^>]*>([^<]*)</);
     if (c4 && c4[1].trim()) kart.kartNum = c4[1].trim();
     var c5 = row.match(/data-id="r\d+c5"[^>]*>([^<]+)</);
-    if (c5 && c5[1].trim()) kart.teamName = c5[1].trim();
+    if (c5 && isValidName(c5[1])) kart.teamName = c5[1].trim();
     var c12 = row.match(/data-id="r\d+c12"[^>]*>([^<]*)</);
-    if (c12 && c12[1].trim()) kart.bestLap = c12[1].trim();
+    if (c12 && isValidLapTime(c12[1])) kart.bestLap = c12[1].trim();
     var c13 = row.match(/data-id="r\d+c13"[^>]*>([^<]*)</);
-    if (c13 && c13[1].trim()) kart.lastLap = c13[1].trim();
+    if (c13 && isValidLapTime(c13[1])) kart.lastLap = c13[1].trim();
     var c14 = row.match(/data-id="r\d+c14"[^>]*>([^<]*)</);
     if (c14 && c14[1].trim()) kart.pits = parseInt(c14[1].trim()) || 0;
     var c1cls = row.match(/data-id="r\d+c1"\s+class="([^"]+)"/);
     if (c1cls) kart.status = c1cls[1];
     count++;
   }
-  console.log("[Grid] "+count+" karts depuis HTML");
-}
-
-// Valide qu'une valeur est bien un temps de tour (entre 45s et 3min sur 1200m)
-// Formats acceptés : "1:07.183" ou "67.183" (secondes)
-function isValidLapTime(val) {
-  if (!val) return false;
-  val = String(val).trim();
-  // Format M:SS ou M:SS.sss
-  var mFmt = val.match(/^(\d+):(\d+\.?\d*)$/);
-  if (mFmt) {
-    var secs = parseInt(mFmt[1])*60 + parseFloat(mFmt[2]);
-    return secs >= 60 && secs <= 180;
-  }
-  // Format SS.sss (secondes brutes)
-  var sFmt = parseFloat(val);
-  if (!isNaN(sFmt)) return sFmt >= 60 && sFmt <= 180;
-  return false;
+  console.log("[Grid] "+count+" karts depuis HTML initial");
 }
 
 function parseMessage(raw) {
@@ -109,9 +110,8 @@ function parseMessage(raw) {
       var cm = line.match(/dyn1\|countdown\|(\d+)/);
       if (cm) { countdown_ms = parseInt(cm[1]); raceStarted = true; }
     }
-    // Parse tous les tokens r[ID]...
-    var tokens = line.match(/r\d+[^\s]*/g) || [];
-    tokens.forEach(function(t) { parseKartToken(t.trim()); });
+    var tokens = line.split(" ");
+    tokens.forEach(function(t) { if (t.startsWith("r")) parseKartToken(t.trim()); });
   });
   lastUpdate = new Date().toISOString();
 }
@@ -119,124 +119,99 @@ function parseMessage(raw) {
 function parseKartToken(token) {
   if (!token || !token.startsWith("r")) return;
 
-  // Format r[ID]|*|GAP|INTERVAL
+  // r[ID]|*|GAP|INTERVAL
   var mStar = token.match(/^r(\d+)\|\*\|(\d+)\|(\d+)$/);
   if (mStar) {
-    var kStar = ensureKart(mStar[1]);
+    var k = ensureKart(mStar[1]);
     var g = parseInt(mStar[2]);
-    kStar.gap = g === 0 ? "Leader" : "+"+(g/1000).toFixed(3)+"s";
-    kStar.interval = (parseInt(mStar[3])/1000).toFixed(3)+"s";
+    k.gap = g === 0 ? "Leader" : "+"+(g/1000).toFixed(3)+"s";
+    k.interval = (parseInt(mStar[3])/1000).toFixed(3)+"s";
     return;
   }
-
-  // Format r[ID]|#|NUM (numéro kart)
-  var mHash = token.match(/^r(\d+)\|#\|(\d+)$/);
-  if (mHash) {
-    ensureKart(mHash[1]).kartNum = mHash[2];
-    return;
-  }
-
-  // Format r[ID]|*i[N]|GAP (position)
+  // r[ID]|#|NUM
+  var mHash = token.match(/^r(\d+)\|#\|(\S+)$/);
+  if (mHash) { ensureKart(mHash[1]).kartNum = mHash[2]; return; }
+  // r[ID]|*i[N]|GAP
   var mPos = token.match(/^r(\d+)\|\*i(\d+)\|(\d*)$/);
   if (mPos) {
-    var kPos = ensureKart(mPos[1]);
-    kPos.pos = parseInt(mPos[2]);
+    var kp = ensureKart(mPos[1]);
+    kp.pos = parseInt(mPos[2]);
     if (mPos[3]) {
       var gp = parseInt(mPos[3]);
-      kPos.gap = gp === 0 ? "Leader" : "+"+(gp/1000).toFixed(3)+"s";
+      kp.gap = gp === 0 ? "Leader" : "+"+(gp/1000).toFixed(3)+"s";
     }
     return;
   }
+  // r[ID]|*out
+  if (/^r\d+\|\*out/.test(token)) { ensureKart(token.match(/^r(\d+)/)[1]).status="out"; return; }
 
-  // Format r[ID]|*out
-  if (token.match(/^r\d+\|\*out\|/)) {
-    ensureKart(token.match(/^r(\d+)/)[1]).status = "out";
-    return;
-  }
-
-  // Format standard r[ID]c[N]|type|value
+  // r[ID]c[N]|type|value
   var m = token.match(/^r(\d+)(c\d+)\|([^|]*)\|(.*)$/);
   if (!m) return;
-  var kartId = m[1], col = m[2], type = m[3], value = m[4].trim();
+  var kartId=m[1], col=m[2], type=m[3], value=m[4].trim();
   var kart = ensureKart(kartId);
 
   switch(col) {
     case "c1": kart.status = type || kart.status; break;
     case "c2":
-      // numéro kart affiché (type vide souvent)
-      if (value) kart.kartNum = value;
+      // Numéro kart affiché (court: 1,2,42,114...)
+      if (value && /^\d+$/.test(value)) kart.kartNum = value;
       break;
     case "c4":
       if (type === "dr") {
-        // Ne jamais écraser le nom complet avec la version abrégée du live
-        if (value && !kart.teamName) kart.teamName = value.trim();
+        // Nom équipe court — ne pas écraser si on a déjà le nom complet
+        if (value && isValidName(value) && !kart.teamName) kart.teamName = value.trim();
       } else if (type === "drteam") {
-        if (value) {
-          // "NOUET Noah [0:49]" → nom + temps roulage
+        // "NOUET Noah [0:49]" → nom pilote + temps roulage
+        if (value && isValidName(value)) {
           var pm = value.match(/^(.*?)\s*\[(\d+:\d+)\]$/);
           if (pm) {
             kart.piloteName = pm[1].trim();
-            kart.piloteTime = pm[2];
           } else {
             kart.piloteName = value.trim();
           }
         }
-      } else {
-        // numéro kart dans certains formats
-        if (value) kart.kartNum = value;
+      } else if (value && /^\d+$/.test(value)) {
+        kart.kartNum = value;
       }
       break;
     case "c6":
-      // écart au leader (gap) — ne pas écraser teamName
-      if (value) kart.gap = value;
-      break;
-    case "c8":
-      // meilleur tour — seulement si valeur vide (reset) ou temps valide
-      if (value && isValidLapTime(value)) kart.bestLap = value;
+      // Écart au leader — JAMAIS utilisé comme nom
+      if (value && isValidName(value)) kart.gap = value;
       break;
     case "c9":
-      // secteur 1
       if (value) kart.s1 = value;
       break;
     case "c10":
-      // meilleur tour — valider que c'est bien un temps de tour
       if (value && isValidLapTime(value)) kart.bestLap = value;
       break;
     case "c12":
-      // "to" = time on track depuis dernier stand
-      // "in" = temps au stand / temps en piste entrant
-      // "tb" ou "tn" = meilleur tour (backup)
       if (type === "to" || type === "in") {
         if (value) kart.onTrack = value;
-      } else if (type === "tb" && value && isValidLapTime(value)) {
-        kart.bestLap = value;
       }
       break;
     case "c13":
-      // dernier tour — "ti" = temps complet fiable, "tn" = à valider
-      // Les valeurs "2","3","4" sont des numéros de secteur, pas des temps
       if (value && type === "ti" && isValidLapTime(value)) kart.lastLap = value;
       else if (value && type === "tn" && isValidLapTime(value)) kart.lastLap = value;
       break;
     case "c14":
-      if (value) kart.pits = parseInt(value) || kart.pits;
+      if (value && /^\d+$/.test(value)) kart.pits = parseInt(value) || kart.pits;
       break;
   }
 }
 
 function buildState() {
   var entries = Object.values(karts)
-    .filter(function(k) { return k.teamName || k.piloteName || k.kartNum; })
-    .sort(function(a,b) { return a.pos - b.pos; })
+    .sort(function(a,b){return a.pos-b.pos;})
     .map(function(k) {
-      // Valider que kartNum n'est pas une valeur parasite (ex: "3 Tours")
-      var validKartNum = k.kartNum && !k.kartNum.match(/Tours?|Tour\s\d|^\d+\.\d+$/) ? k.kartNum : "";
+      var teamDisplay = k.teamName || "";
+      var driverDisplay = k.piloteName || k.teamName || "";
+      var kartDisplay = k.teamName || (k.kartNum ? "Kart "+k.kartNum : "Kart "+k.id.substring(0,6));
       return {
         pos:        k.pos,
-        kart:       k.teamName || validKartNum || k.id,
-        team:       k.teamName || "",
-        driver:     k.piloteName || k.teamName || ("Kart "+(k.kartNum||k.id)),
-        driverTime: k.piloteTime || "",
+        kart:       kartDisplay,
+        team:       teamDisplay,
+        driver:     driverDisplay,
         lastLap:    k.lastLap || "",
         bestLap:    k.bestLap || "",
         laps:       k.laps || 0,
@@ -250,8 +225,17 @@ function buildState() {
     });
 
   var ourTeam = entries.find(function(e) {
-    return String(e.kart) === OUR_KART_NUM;
+    return String(e.kart) === OUR_KART_NUM || 
+           (karts[e.kart] && String(karts[e.kart].kartNum) === OUR_KART_NUM);
   }) || null;
+
+  // Cherche aussi par kartNum dans les données brutes
+  if (!ourTeam) {
+    var ourRaw = Object.values(karts).find(function(k) {
+      return String(k.kartNum) === OUR_KART_NUM;
+    });
+    if (ourRaw) ourTeam = entries.find(function(e) { return e.kart === (ourRaw.teamName || "Kart "+ourRaw.kartNum); });
+  }
 
   return {
     connected:     true,
@@ -282,9 +266,9 @@ function connectToApex() {
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   connectionTime = new Date().toISOString();
   console.log("[Apex] Connexion...");
-  try { apexWs = new WebSocket(APEX_WS_URL, { headers: APEX_HEADERS }); }
-  catch(e) { reconnectTimer = setTimeout(connectToApex, 8000); return; }
-  apexWs.on("open",    function() { console.log("[Apex] Connecte ! Kart: "+OUR_KART_NUM); });
+  try { apexWs = new WebSocket(APEX_WS_URL, {headers:APEX_HEADERS}); }
+  catch(e) { reconnectTimer = setTimeout(connectToApex,8000); return; }
+  apexWs.on("open",    function() { console.log("[Apex] Connecte ! Kart:#"+OUR_KART_NUM); });
   apexWs.on("message", function(data) { parseMessage(data.toString()); broadcast({type:"update",data:buildState()}); });
   apexWs.on("close",   function() { reconnectTimer = setTimeout(connectToApex,5000); broadcast({type:"disconnected"}); });
   apexWs.on("error",   function(e) { console.error("[Apex]",e.message); });
@@ -297,29 +281,36 @@ var server = http.createServer(function(req,res) {
 
   if (url==="/status") return res.end(JSON.stringify({
     ok:true, apexConnected:apexWs&&apexWs.readyState===WebSocket.OPEN,
-    ourKart:OUR_KART_NUM, raceActive:raceStarted, sessionTitle:sessionTitle,
-    trackName:trackName, timeRemaining:fmtMs(countdown_ms),
+    ourKart:OUR_KART_NUM, raceActive:raceStarted,
+    sessionTitle:sessionTitle, trackName:trackName,
+    timeRemaining:fmtMs(countdown_ms),
     kartsTracked:Object.keys(karts).length,
     kartsWithNames:Object.values(karts).filter(function(k){return k.teamName||k.piloteName;}).length,
-    lastUpdate:lastUpdate, connectionTime:connectionTime, dashboardClients:clients.size,
+    lastUpdate:lastUpdate, connectionTime:connectionTime,
+    dashboardClients:clients.size,
   },null,2));
 
-  if (url==="/race")      return res.end(JSON.stringify(buildState(),null,2));
-  if (url==="/raw")       return res.end(JSON.stringify({messages:rawLog},null,2));
-  if (url==="/karts")     return res.end(JSON.stringify(Object.values(karts).sort(function(a,b){return a.pos-b.pos;}),null,2));
+  if (url==="/race")  return res.end(JSON.stringify(buildState(),null,2));
+  if (url==="/raw")   return res.end(JSON.stringify({messages:rawLog},null,2));
+  if (url==="/karts") return res.end(JSON.stringify(Object.values(karts).sort(function(a,b){return a.pos-b.pos;}),null,2));
+
   if (url==="/reconnect") {
-    // Garder les noms en mémoire, reset seulement les positions/temps
+    // Préserver les noms, reset positions et temps
     Object.values(karts).forEach(function(k) {
-      k.pos=99; k.gap=""; k.interval=""; k.lastLap=""; k.onTrack=""; k.s1="";
+      k.pos=99; k.gap=""; k.interval=""; k.lastLap="";
+      k.onTrack=""; k.s1=""; k.status="";
     });
     countdown_ms=0; raceStarted=false; comments=[];
     if (apexWs) { try{apexWs.close();}catch(e){} }
     setTimeout(connectToApex,500);
-    return res.end(JSON.stringify({ok:true,message:"Reconnexion en cours — noms préservés, attendre 3s"}));
+    return res.end(JSON.stringify({ok:true,message:"Reconnexion — noms préservés, attendre 3s"}));
   }
-  res.end(JSON.stringify({name:"Race Founders Proxy v5",ourKart:OUR_KART_NUM,
-    endpoints:{"/status":"Etat","/race":"Classement","/raw":"Messages bruts","/karts":"Karts","/reconnect":"Reset"}}
-  ,null,2));
+
+  res.end(JSON.stringify({
+    name:"Race Founders Proxy v6",ourKart:OUR_KART_NUM,
+    endpoints:{"/status":"Etat","/race":"Classement","/raw":"Messages bruts",
+               "/karts":"Karts détaillés","/reconnect":"Reset+reconnexion"}
+  },null,2));
 });
 
 var wss = new WebSocket.Server({server});
@@ -332,6 +323,6 @@ wss.on("connection",function(ws){
 
 var PORT = process.env.PORT||3001;
 server.listen(PORT,function(){
-  console.log("Race Founders Proxy v5 | Port:"+PORT+" | Kart:#"+OUR_KART_NUM);
+  console.log("Race Founders Proxy v6 | Port:"+PORT+" | Kart:#"+OUR_KART_NUM);
   connectToApex();
 });
