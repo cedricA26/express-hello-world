@@ -203,16 +203,32 @@ function parseKartToken(token) {
       // dr     = nom équipe simple
       // sinon  = numéro de kart affiché
       if (type === "drteam" || type === "dr") {
-        if (value) kart.driver = value.replace(/\s*\[[\d:]+\]\s*$/, "").trim();
+        if (value) {
+          // Garder le nom complet avec le temps pour l'affichage
+          kart.driver = value.trim();
+          // Extraire aussi le numéro de kart depuis kartNum si pas encore set
+        }
       } else {
         if (value) kart.kartNum = value;
       }
       break;
     case "c5":  if(value) kart.driver = value; break;
+    case "c5":
+      if (type === "ib" || type === "in") { if(value) kart.gap = value; }
+      break;
+    case "c6":
+      if (type === "in") { if(value) kart.interval = value; }
+      break;
     case "c7":  if(value) kart.gap      = value; break;
     case "c8":  if(value) kart.interval = value; break;
     case "c9":  if(value) kart.s1       = value; break;
-    case "c10": if(value) kart.s2       = value; break;
+    case "c10":
+      // c10 peut être bestLap (1:07.666) ou S2
+      if (value) {
+        if (value.includes(":") || parseFloat(value) > 60) kart.bestLap = value;
+        else kart.s2 = value;
+      }
+      break;
     case "c11": if(value) kart.s3       = value; break;
     case "c12":
       if (type === "to") {
@@ -239,16 +255,19 @@ function buildState() {
     .filter(function(k) { return k.pos < 99 || k.driver; })
     .sort(function(a, b) { return a.pos - b.pos; })
     .map(function(k) {
+      // Nettoyer le nom du pilote (enlever le [0:28] du drteam)
+      var driverClean = k.driver ? k.driver.replace(/\s*\[[\d:]+\]$/, "").trim() : "";
       return {
         pos:     k.pos,
         kart:    k.kartNum || k.id,
-        driver:  k.driver  || ("Kart " + (k.kartNum || k.id)),
+        driver:  driverClean || ("Kart " + (k.kartNum || k.id)),
         lastLap: k.lastLap || "",
         bestLap: k.bestLap || "",
         laps:    k.laps    || 0,
         gap:     k.gap     || "",
         pits:    k.pits    || 0,
         status:  k.status  || "",
+        onTrack: k.onTrack || "",
       };
     });
 
