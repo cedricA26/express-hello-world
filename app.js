@@ -229,9 +229,11 @@ function buildState() {
     .filter(function(k) { return k.teamName || k.piloteName || k.kartNum; })
     .sort(function(a,b) { return a.pos - b.pos; })
     .map(function(k) {
+      // Valider que kartNum n'est pas une valeur parasite (ex: "3 Tours")
+      var validKartNum = k.kartNum && !k.kartNum.match(/Tours?|Tour\s\d|^\d+\.\d+$/) ? k.kartNum : "";
       return {
         pos:        k.pos,
-        kart:       k.teamName || k.kartNum || k.id,
+        kart:       k.teamName || validKartNum || k.id,
         team:       k.teamName || "",
         driver:     k.piloteName || k.teamName || ("Kart "+(k.kartNum||k.id)),
         driverTime: k.piloteTime || "",
@@ -306,10 +308,14 @@ var server = http.createServer(function(req,res) {
   if (url==="/raw")       return res.end(JSON.stringify({messages:rawLog},null,2));
   if (url==="/karts")     return res.end(JSON.stringify(Object.values(karts).sort(function(a,b){return a.pos-b.pos;}),null,2));
   if (url==="/reconnect") {
-    karts={}; countdown_ms=0; raceStarted=false; comments=[];
+    // Garder les noms en mémoire, reset seulement les positions/temps
+    Object.values(karts).forEach(function(k) {
+      k.pos=99; k.gap=""; k.interval=""; k.lastLap=""; k.onTrack=""; k.s1="";
+    });
+    countdown_ms=0; raceStarted=false; comments=[];
     if (apexWs) { try{apexWs.close();}catch(e){} }
     setTimeout(connectToApex,500);
-    return res.end(JSON.stringify({ok:true,message:"Reconnexion en cours — attendre 3s"}));
+    return res.end(JSON.stringify({ok:true,message:"Reconnexion en cours — noms préservés, attendre 3s"}));
   }
   res.end(JSON.stringify({name:"Race Founders Proxy v5",ourKart:OUR_KART_NUM,
     endpoints:{"/status":"Etat","/race":"Classement","/raw":"Messages bruts","/karts":"Karts","/reconnect":"Reset"}}
