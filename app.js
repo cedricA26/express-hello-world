@@ -21,6 +21,8 @@ const APEX_HEADERS = {
 let karts = {}, countdown_ms = 0, raceStarted = false;
 let sessionTitle = "", trackName = "", lastUpdate = null;
 let rawLog = [], connectionTime = null, comments = [];
+// Meilleurs temps par pilote : { "NOUET": "1:07.289", "LHERMEY": "1:07.903" }
+let piloteBestLaps = {};
 
 function fmtMs(ms) {
   var s = Math.floor(Math.abs(ms)/1000);
@@ -37,6 +39,16 @@ function isValidName(val) {
   if (/^\+?\d+\.\d+s?$/.test(val)) return false;           // "+23.141s", "25.596"
   if (/^Tour\s+\d+$/.test(val)) return false;              // "Tour 175"
   return true;
+}
+
+// Convertit un temps de tour en secondes (ex: "1:07.289" → 67.289)
+function lapToSeconds(val) {
+  if (!val) return 999;
+  val = String(val).trim();
+  var mFmt = val.match(/^(\d+):(\d+\.?\d*)$/);
+  if (mFmt) return parseInt(mFmt[1])*60 + parseFloat(mFmt[2]);
+  var sFmt = parseFloat(val);
+  return isNaN(sFmt) ? 999 : sFmt;
 }
 
 // Valide un temps de tour (60s à 180s sur circuit 1200m)
@@ -191,7 +203,21 @@ function parseKartToken(token) {
       if (value) kart.s1 = value;
       break;
     case "c10":
-      if (value && isValidLapTime(value)) kart.bestLap = value;
+      if (value && isValidLapTime(value)) {
+        // Si le temps est meilleur que le précédent du kart, l'attribuer au pilote en piste
+        var prevBest = kart.bestLap ? lapToSeconds(kart.bestLap) : 999;
+        var newTime  = lapToSeconds(value);
+        if (newTime < prevBest) {
+          kart.bestLap = value;
+          // Attribuer au pilote actuellement en piste
+          if (kart.piloteName) {
+            var prevPilote = piloteBestLaps[kart.piloteName] ? lapToSeconds(piloteBestLaps[kart.piloteName]) : 999;
+            if (newTime < prevPilote) {
+              piloteBestLaps[kart.piloteName] = value;
+            }
+          }
+        }
+      }
       break;
     case "c12":
       if (type === "to" || type === "in") {
@@ -252,6 +278,7 @@ function buildState() {
     connected:     true,
     raceActive:    raceStarted,
     sessionTitle:  sessionTitle,
+    piloteBestLaps: piloteBestLaps,
     trackName:     trackName,
     timeRemaining: countdown_ms > 0 ? fmtMs(countdown_ms) : "—",
     countdown_ms:  countdown_ms,
@@ -305,8 +332,21 @@ var server = http.createServer(function(req,res) {
   if (url==="/raw")   return res.end(JSON.stringify({messages:rawLog},null,2));
   if (url==="/karts") return res.end(JSON.stringify(Object.values(karts).sort(function(a,b){return a.pos-b.pos;}),null,2));
 
+  if (url==="/pilots") {
+    // Meilleurs temps par pilote
+    var pilotsArr = Object.keys(piloteBestLaps).map(function(name) {
+      return { pilot: name, bestLap: piloteBestLaps[name], seconds: lapToSeconds(piloteBestLaps[name]) };
+    }).sort(function(a,b) { return a.seconds - b.seconds; });
+    return res.end(JSON.stringify({ total: pilotsArr.length, ranking: pilotsArr }, null, 2));
+  }
+
+  if (url==="/reset-pilots") {
+    piloteBestLaps = {};
+    return res.end(JSON.stringify({ ok: true, message: "Meilleurs temps pilotes réinitialisés" }));
+  }
+
   if (url==="/reconnect") {
-    // Préserver les noms, reset positions et temps
+    // Préserver les noms et meilleurs temps pilotes, reset positions
     Object.values(karts).forEach(function(k) {
       k.pos=99; k.gap=""; k.interval=""; k.lastLap="";
       k.onTrack=""; k.s1=""; k.status="";
@@ -320,7 +360,8 @@ var server = http.createServer(function(req,res) {
   res.end(JSON.stringify({
     name:"Race Founders Proxy v6",ourKart:OUR_KART_NUM,
     endpoints:{"/status":"Etat","/race":"Classement","/raw":"Messages bruts",
-               "/karts":"Karts détaillés","/reconnect":"Reset+reconnexion"}
+               "/karts":"Karts détaillés","/pilots":"Meilleurs temps par pilote",
+               "/reset-pilots":"Reset meilleurs temps pilotes","/reconnect":"Reset+reconnexion"}
   },null,2));
 });
 
