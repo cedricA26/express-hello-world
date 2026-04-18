@@ -73,9 +73,17 @@ function parseGridHtml(html) {
     var kart = ensureKart(kartId);
     kart.pos = pos;
     var c4 = row.match(/data-id="r\d+c4"[^>]*>([^<]*)</);
-    if (c4 && c4[1].trim()) kart.kartNum = c4[1].trim();
+    if (c4 && c4[1].trim()) {
+      var c4val = c4[1].trim();
+      // Si c4 est un numéro court → kartNum, sinon → teamName (format endurance)
+      if (/^\d+$/.test(c4val)) kart.kartNum = c4val;
+      else if (isValidName(c4val)) kart.teamName = c4val;
+    }
     var c5 = row.match(/data-id="r\d+c5"[^>]*>([^<]+)</);
-    if (c5 && isValidName(c5[1])) kart.teamName = c5[1].trim();
+    if (c5 && isValidName(c5[1])) {
+      // c5 peut être le nom pilote ou équipe selon le format
+      if (!kart.teamName) kart.teamName = c5[1].trim();
+    }
     var c12 = row.match(/data-id="r\d+c12"[^>]*>([^<]*)</);
     if (c12 && isValidLapTime(c12[1])) kart.bestLap = c12[1].trim();
     var c13 = row.match(/data-id="r\d+c13"[^>]*>([^<]*)</);
@@ -206,12 +214,15 @@ function buildState() {
     .map(function(k) {
       var teamDisplay = k.teamName || "";
       var driverDisplay = k.piloteName || k.teamName || "";
-      var kartDisplay = k.teamName || (k.kartNum ? "Kart "+k.kartNum : "Kart "+k.id.substring(0,6));
+      // kartNum peut être un numéro court ou un nom d'équipe
+      var kartNumIsName = k.kartNum && !(/^\d+$/.test(k.kartNum));
+      var kartDisplay = k.teamName || (kartNumIsName ? k.kartNum : (k.kartNum ? "Kart "+k.kartNum : k.id.substring(0,6)));
+      var teamDisplay = k.teamName || (kartNumIsName ? k.kartNum : "");
       return {
         pos:        k.pos,
         kart:       kartDisplay,
         team:       teamDisplay,
-        driver:     driverDisplay,
+        driver:     driverDisplay || kartDisplay,
         lastLap:    k.lastLap || "",
         bestLap:    k.bestLap || "",
         laps:       k.laps || 0,
