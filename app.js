@@ -80,11 +80,11 @@ function isValidLapTime(val) {
   var mFmt = val.match(/^(\d+):(\d+\.?\d*)$/);
   if (mFmt) {
     var secs = parseInt(mFmt[1])*60 + parseFloat(mFmt[2]);
-    return secs >= 45 && secs <= 180;
+    return secs >= 60 && secs <= 180;
   }
   // Format SS.sss (secondes brutes)
   var sFmt = parseFloat(val);
-  if (!isNaN(sFmt)) return sFmt >= 45 && sFmt <= 180;
+  if (!isNaN(sFmt)) return sFmt >= 60 && sFmt <= 180;
   return false;
 }
 
@@ -186,12 +186,12 @@ function parseKartToken(token) {
       }
       break;
     case "c6":
-      // écart au leader
+      // écart au leader (gap) — ne pas écraser teamName
       if (value) kart.gap = value;
       break;
     case "c8":
-      // meilleur tour (parfois)
-      if (value) kart.bestLap = value;
+      // meilleur tour — seulement si valeur vide (reset) ou temps valide
+      if (value && isValidLapTime(value)) kart.bestLap = value;
       break;
     case "c9":
       // secteur 1
@@ -207,16 +207,15 @@ function parseKartToken(token) {
       // "tb" ou "tn" = meilleur tour (backup)
       if (type === "to" || type === "in") {
         if (value) kart.onTrack = value;
-      } else if ((type === "tb" || type === "tn") && value && isValidLapTime(value)) {
+      } else if (type === "tb" && value && isValidLapTime(value)) {
         kart.bestLap = value;
       }
       break;
     case "c13":
       // dernier tour — "ti" = temps complet fiable, "tn" = à valider
-      if (value) {
-        if (type === "ti" && isValidLapTime(value)) kart.lastLap = value;
-        else if (type === "tn" && isValidLapTime(value)) kart.lastLap = value;
-      }
+      // Les valeurs "2","3","4" sont des numéros de secteur, pas des temps
+      if (value && type === "ti" && isValidLapTime(value)) kart.lastLap = value;
+      else if (value && type === "tn" && isValidLapTime(value)) kart.lastLap = value;
       break;
     case "c14":
       if (value) kart.pits = parseInt(value) || kart.pits;
