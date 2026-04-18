@@ -168,7 +168,8 @@ function parseKartToken(token) {
       break;
     case "c4":
       if (type === "dr") {
-        if (value) kart.teamName = value.trim();
+        // Ne jamais écraser le nom complet avec la version abrégée du live
+        if (value && !kart.teamName) kart.teamName = value.trim();
       } else if (type === "drteam") {
         if (value) {
           // "NOUET Noah [0:49]" → nom + temps roulage
@@ -230,7 +231,7 @@ function buildState() {
     .map(function(k) {
       return {
         pos:        k.pos,
-        kart:       k.kartNum || k.id,
+        kart:       k.teamName || k.kartNum || k.id,
         team:       k.teamName || "",
         driver:     k.piloteName || k.teamName || ("Kart "+(k.kartNum||k.id)),
         driverTime: k.piloteTime || "",
