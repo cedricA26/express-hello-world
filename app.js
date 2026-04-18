@@ -71,6 +71,23 @@ function parseGridHtml(html) {
   console.log("[Grid] "+count+" karts depuis HTML");
 }
 
+// Valide qu'une valeur est bien un temps de tour (entre 45s et 3min sur 1200m)
+// Formats acceptés : "1:07.183" ou "67.183" (secondes)
+function isValidLapTime(val) {
+  if (!val) return false;
+  val = String(val).trim();
+  // Format M:SS ou M:SS.sss
+  var mFmt = val.match(/^(\d+):(\d+\.?\d*)$/);
+  if (mFmt) {
+    var secs = parseInt(mFmt[1])*60 + parseFloat(mFmt[2]);
+    return secs >= 45 && secs <= 180;
+  }
+  // Format SS.sss (secondes brutes)
+  var sFmt = parseFloat(val);
+  if (!isNaN(sFmt)) return sFmt >= 45 && sFmt <= 180;
+  return false;
+}
+
 function parseMessage(raw) {
   rawLog.push(raw.substring(0,300));
   if (rawLog.length > 30) rawLog.shift();
@@ -181,16 +198,25 @@ function parseKartToken(token) {
       if (value) kart.s1 = value;
       break;
     case "c10":
-      // meilleur tour
-      if (value) kart.bestLap = value;
+      // meilleur tour — valider que c'est bien un temps de tour
+      if (value && isValidLapTime(value)) kart.bestLap = value;
       break;
     case "c12":
+      // "to" = time on track depuis dernier stand
+      // "in" = temps au stand / temps en piste entrant
+      // "tb" ou "tn" = meilleur tour (backup)
       if (type === "to" || type === "in") {
         if (value) kart.onTrack = value;
+      } else if ((type === "tb" || type === "tn") && value && isValidLapTime(value)) {
+        kart.bestLap = value;
       }
       break;
     case "c13":
-      if (value && (type === "tn" || type === "ti")) kart.lastLap = value;
+      // dernier tour — "ti" = temps complet fiable, "tn" = à valider
+      if (value) {
+        if (type === "ti" && isValidLapTime(value)) kart.lastLap = value;
+        else if (type === "tn" && isValidLapTime(value)) kart.lastLap = value;
+      }
       break;
     case "c14":
       if (value) kart.pits = parseInt(value) || kart.pits;
